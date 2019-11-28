@@ -45,7 +45,7 @@ class ModbusClient:
         # object vars
         self.__hostname = 'localhost'
         self.__port = const.MODBUS_PORT
-        self.__unit_id = 1
+        self.__unit_id = 0
         self.__timeout = 30.0                # socket timeout
         self.__debug = False                 # debug trace on/off
         self.__auto_open = False             # auto TCP connect
@@ -56,6 +56,16 @@ class ModbusClient:
         self.__version = const.VERSION       # version number
         self.__last_error = const.MB_NO_ERR  # last error code
         self.__last_except = 0               # last expect code
+
+        # Added constantss
+        self.__meiType = 13
+        self.__read = 0
+        self.__write = 1
+        self.__protocolOption = 0
+        self.__nodeID = 0
+        self.__startingAddress = 0
+        self.__sdoObject = 0
+
         # set host
         if host:
             if not self.host(host):
@@ -714,6 +724,7 @@ class ModbusClient:
         bytes_nb = len(regs_val_str)
         # format modbus frame body
         body = struct.pack('>HHB', regs_addr, regs_nb, bytes_nb) + regs_val_str
+        print(body)
         tx_buffer = self._mbus_frame(const.WRITE_MULTIPLE_REGISTERS, body)
         # send request
         s_send = self._send_mbus(tx_buffer)
@@ -890,6 +901,7 @@ class ModbusClient:
             # body decode
             rx_bd_fc = struct.unpack('B', rx_buffer[0:1])[0]
             f_body = rx_buffer[1:]
+
         # modbus RTU receive
         elif self.__mode == const.MODBUS_RTU:
             # receive modbus RTU frame (max size is 256 bytes)
@@ -953,10 +965,11 @@ class ModbusClient:
         # modbus/TCP
         if self.__mode == const.MODBUS_TCP:
             # build frame ModBus Application Protocol header (mbap)
-            self.__hd_tr_id = random.randint(0, 65535)
+            # self.__hd_tr_id = random.randint(0, 65535)
+            self.__hd_tr_id = 5397
             tx_hd_pr_id = 0
             tx_hd_length = len(f_body) + 1
-            f_mbap = struct.pack('>HHHB', self.__hd_tr_id, tx_hd_pr_id,
+            f_mbap = struct.pack('>HHHB',self.__hd_tr_id, tx_hd_pr_id,
                                  tx_hd_length, self.__unit_id)
             return f_mbap + f_body
         # modbus RTU
@@ -975,13 +988,21 @@ class ModbusClient:
         :type data: str (Python2) or class bytes (Python3)
         """
         # split data string items to a list of hex value
-        dump = ['%02X' % c for c in bytearray(data)]
+        dumpTmp = ['%02X' % c for c in bytearray(data)]
+        if len(dumpTmp)>19:
+            dumpData = dumpTmp[19:]
+            dump = dumpTmp[0:19] +dumpData[::-1]
+        else:
+            dump = dumpTmp
+
         # format for TCP or RTU
         if self.__mode == const.MODBUS_TCP:
             if len(dump) > 6:
                 # [MBAP] ...
                 dump[0] = '[' + dump[0]
                 dump[6] += ']'
+                if len(dump) > 19:
+                    dump[19] = '| ' + dump[19]
         elif self.__mode == const.MODBUS_RTU:
             if len(dump) > 4:
                 # ... [CRC]
@@ -1023,3 +1044,133 @@ class ModbusClient:
         """
         if self.__debug:
             print(msg)
+
+    def IGUS_write_multiple_registers(self, object, objectSubIndex, dataType, data):
+        """Modbus function WRITE_MULTIPLE_REGISTERS (0x10)
+
+        :param object: CANopen object
+        :type object: str
+        :param data: data to write
+        :type data: int list
+        :returns: True if write ok or None if fail
+        :rtype: bool or None
+        """
+
+        ####### Actual differences ########
+
+        # CANopen object to be adressed
+        objectDec = int(object,16)
+
+        # Convert registers in correct data type
+        if dataType=="char":
+            regs_val_str = struct.pack('<b', data)
+            byteCount = 1
+        elif dataType=="unsignedChar":
+            regs_val_str = struct.pack('<B', data)
+            byteCount = 1
+        elif dataType=="short":
+            regs_val_str = struct.pack('<h', data)
+            byteCount = 2
+        elif dataType=="unsignedShort":
+            regs_val_str = struct.pack('<H', data)
+            byteCount = 2
+        elif dataType=="int":
+            regs_val_str = struct.pack('<i', data)
+            byteCount = 4
+        elif dataType=="unsignedInt":
+            regs_val_str = struct.pack('<I', data)
+            byteCount = 4
+        else:
+            self.__debug_msg('Data type not consistent with options')
+            return None
+
+        frame_write_msg = struct.pack(">bbbbHbHbb", self.__meiType, self.__write,
+                                                    self.__protocolOption, self.__nodeID,
+                                                    objectDec, objectSubIndex,
+                                                    self.__startingAddress,
+                                                    self.__sdoObject,
+                                                    byteCount)
+
+        body = frame_write_msg + regs_val_str
+
+        tx_buffer = self._mbus_frame(43, body)
+        # send request
+        s_send = self._send_mbus(tx_buffer)
+        # check error
+        if not s_send:
+            return None
+        # receive
+        f_body = self._recv_mbus()
+        # check error
+        if not f_body:
+            return None
+
+        return True
+
+    def IGUS_read_multiple_registers(self, object, objectSubIndex, dataType, dataLength):
+        """Modbus function WRITE_MULTIPLE_REGISTERS (0x10)
+
+        :param object: CANopen object
+        :type object: str
+        :param object: CANopen object sub index
+        :type object: str
+        :param object: data type of the registers
+        :type object: str
+        :param data: length of data to read
+        :type data: int
+        :returns: True if write ok or None if fail
+        :rtype: int or None
+        """
+
+        # CANopen object to be adressed
+        objectDec = int(object,16)
+
+        byteCount = dataLength
+
+        frame_read_msg = struct.pack(">bbbbHbHbb", self.__meiType, self.__read,
+                                                    self.__protocolOption, self.__nodeID,
+                                                    objectDec, objectSubIndex,
+                                                    self.__startingAddress,
+                                                    self.__sdoObject, byteCount)
+
+        tx_buffer = self._mbus_frame(43, frame_read_msg)
+        # send request
+        s_send = self._send_mbus(tx_buffer)
+        # check error
+        if not s_send:
+            return None
+        # receive
+        f_body = self._recv_mbus()
+
+        # check error
+        if not f_body:
+            return None
+
+        # check min frame body size
+        if len(f_body) < 11:
+            self.__last_error = const.MB_RECV_ERR
+            self.__debug_msg('read_holding_registers(): rx frame under min size')
+            self.close()
+            return None
+
+        # extract field "byte count"
+        rx_byte_count = struct.unpack('B', f_body[10:11])[0]
+
+        # Convert registers in correct data type
+        if dataType=="char":
+            f_regs = struct.unpack('<b', f_body[11:])
+        elif dataType=="unsignedChar":
+            f_regs = struct.unpack('<B', f_body[11:])
+        elif dataType=="short":
+            f_regs = struct.unpack('<h', f_body[11:])
+        elif dataType=="unsignedShort":
+            f_regs = struct.unpack('<H', f_body[11:])
+        elif dataType=="int":
+            f_regs = struct.unpack('<i', f_body[11:])
+        elif dataType=="unsignedInt":
+            f_regs = struct.unpack('<I', f_body[11:])
+        else:
+            self.__debug_msg('Data type not consistent with options')
+            return None
+
+        return f_regs
